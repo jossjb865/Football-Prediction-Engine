@@ -1,0 +1,41 @@
+name: Daily Liga MX Predictions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * *"   # every day 14:00 UTC
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download latest models
+        uses: actions/download-artifact@v4
+        with:
+          name: liga-mx-models
+          path: artifacts/models/
+        continue-on-error: true
+
+      - name: Run predictions
+        env:
+          ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
+          LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
+        run: |
+          python predict.py
+
+      - name: Upload predictions
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-predictions
+          path: predictions_*.csv
