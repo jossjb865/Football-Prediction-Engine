@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 """
-CLI for live / batch inference – Liga MX only (iSportsAPI).
-Example:
-    python predict.py --date 2026-08-01
+Predicción mejorada con drift detection.
 """
 
 import argparse
 import logging
-from datetime import datetime
-
-import pandas as pd
+import os
+from datetime import datetime, timedelta
 
 from config.logging_config import setup_logging
 from config.settings import settings
+from data_loader.data_processor import DataProcessor
 from data_loader.isports_client import iSportsClient
 from pipelines.inference_pipeline import InferencePipeline
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Liga MX Prediction Engine – Inference")
-    parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD (default = today)")
-    parser.add_argument("--models-dir", default=None)
+    parser = argparse.ArgumentParser(description="Enhanced Prediction Engine")
+    parser.add_argument("--days-ahead", type=int, default=7, help="Days to predict")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--no-drift-check", action="store_true", help="Skip drift detection")
     return parser.parse_args()
 
 
@@ -30,54 +28,59 @@ def main():
     setup_logging(level=args.log_level)
     logger = logging.getLogger("predict")
 
-    settings.validate()
-    date_str = args.date or datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        settings.validate()
+    except EnvironmentError as exc:
+        logger.error(str(exc))
+        return
 
     client = iSportsClient()
-    schedules = client.get_schedule_by_date(date_str)
-    if not schedules:
-        schedules = client.get_livescores_today()
+    processor = DataProcessor(client)
+    pipeline = InferencePipeline()
 
-    records = []
-    for item in schedules:
-        match_time = item.get("matchTime")
+    # Fetch upcoming matches
+    today = datetime.now()
+    upcoming = []
+    for offset in range(args.days_ahead):
+        date = (today + timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
-            start_time = pd.to_datetime(int(match_time), unit="s", utc=True) if match_time else pd.NaT
-        except Exception:
-            start_time = pd.NaT
-        records.append(
-            {
-                "match_id": str(item.get("matchId") or ""),
-                "start_time": start_time,
-                "home_id": str(item.get("homeId") or ""),
-                "away_id": str(item.get("awayId") or ""),
-                "home_name": item.get("homeName") or item.get("home") or "",
-                "away_name": item.get("awayName") or item.get("away") or "",
-                "competition_id": str(item.get("leagueId") or settings.LIGA_MX_LEAGUE_ID),
-            }
-        )
+            matches = client.get_schedule_by_date(date)
+            upcoming.extend(matches)
+        except Exception as e:
+            logger.warning(f"Could not fetch {date}: {e}")
 
-    if not records:
-        logger.warning("No Liga MX matches found for %s", date_str)
+    if not upcoming:
+        logger.info("No upcoming Liga MX matches found")
         return
 
-    matches = pd.DataFrame(records)
-    matches = matches[matches["match_id"] != ""].reset_index(drop=True)
+    # Format data
+    records = []
+    for m in upcoming:
+        records.append({
+            "match_id": str(m.get("matchId")),
+            "home_name": m.get("homeName", ""),
+            "away_name": m.get("awayName", ""),
+            "start_time": datetime.fromtimestamp(int(m.get("matchTime", 0))),
+        })
 
-    if matches.empty:
-        logger.warning("No matches left after filtering")
-        return
+    matches_df = pd.DataFrame(records)
+    logger.info(f"🔮 Predicting {len(matches_df)} matches...")
 
-    pipeline = InferencePipeline(models_dir=args.models_dir)
-    preds = pipeline.predict_matches(matches)
+    # Predict with drift detection
+    predictions, drift_report = pipeline.predict_matches(
+        matches_df,
+        detect_drift=not args.no_drift_check
+    )
 
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", 160)
-    print("\n=== Liga MX Predictions ===")
-    print(preds.to_string(index=False))
-    preds.to_csv(f"predictions_{date_str}.csv", index=False)
-    logger.info("Saved predictions_%s.csv", date_str)
+    # Save results
+    os.makedirs("artifacts/predictions", exist_ok=True)
+    output_path = f"artifacts/predictions/predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    predictions.to_csv(output_path, index=False)
+    
+    logger.info(f"✅ Predictions saved to {output_path}")
+    print(predictions[["home_name", "away_name", "prediction", "confidence"]].to_string(index=False))
 
 
 if __name__ == "__main__":
+    import pandas as pd
     main()
