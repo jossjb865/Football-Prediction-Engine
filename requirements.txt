@@ -2,10 +2,13 @@
 scikit-learn>=1.3.0
 xgboost>=2.0.0
 catboost>=1.2.0
-torch>=2.0.0
 numpy>=1.24.0
 pandas>=2.0.0
 joblib>=1.3.0
+
+# PyTorch (Versión específica para CPU para evitar descargas gigantescas en GitHub Actions)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0+cpu
 
 # Data processing
 requests>=2.31.0
