@@ -65,7 +65,6 @@ class SuperStackingEnsemble:
 
         # Train meta-model on OOF predictions
         self.meta_model = LogisticRegression(
-            multi_class="multinomial",
             solver="lbfgs",
             max_iter=1000,
             random_state=self.random_state,
