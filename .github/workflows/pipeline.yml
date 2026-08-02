@@ -39,7 +39,7 @@ jobs:
           python main.py --min-year 2020
       
       - name: Upload model artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trained-models
           path: artifacts/models/
@@ -49,7 +49,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -62,7 +62,7 @@ jobs:
           pip install -r requirements.txt
       
       - name: Download model artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: artifacts/models/
@@ -75,7 +75,7 @@ jobs:
           python predict.py --days-ahead 7
       
       - name: Upload predictions
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: daily-predictions
           path: artifacts/predictions/
