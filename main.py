@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 
 from config.logging_config import setup_logging
@@ -40,6 +41,16 @@ def main():
     )
     report = pipeline.run(max_matches=args.max_matches)
     logger.info("Pipeline finished. Metrics: %s", report.to_dict())
+
+    # Asegurar que la carpeta de artefactos exista y guardar el modelo
+    os.makedirs("artifacts/models", exist_ok=True)
+    
+    if hasattr(pipeline, "save"):
+        pipeline.save("artifacts/models/model.joblib")
+        logger.info("Models saved successfully to artifacts/models/")
+    elif hasattr(pipeline, "ensemble") and hasattr(pipeline.ensemble, "save"):
+        pipeline.ensemble.save("artifacts/models/ensemble.joblib")
+        logger.info("Ensemble saved successfully to artifacts/models/")
 
 
 if __name__ == "__main__":
