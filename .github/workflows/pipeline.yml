@@ -1,90 +1,277 @@
-name: Enhanced ML Pipeline
+name: Football Prediction CI/CD Pipeline
 
 on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
   schedule:
     - cron: '0 14 * * *'  # Daily at 14:00 UTC
   workflow_dispatch:
-    inputs:
-      train_model:
-        description: 'Retrain model?'
-        required: false
-        default: 'false'
+
+env:
+  PYTHON_VERSION: '3.11'
+  CACHE_KEY_PREFIX: 'ligamx-v1'
 
 jobs:
-  train:
-    if: github.event.inputs.train_model == 'true' || github.event_name == 'schedule'
+  # ============================================
+  # JOB 1: LINTING Y CALIDAD DE CÓDIGO
+  # ============================================
+  lint:
+    name: Code Quality Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
-      
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ env.CACHE_KEY_PREFIX }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-pip-
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort mypy
+
+      - name: Run Black formatter check
+        run: black --check --diff .
+
+      - name: Run isort import check
+        run: isort --check-only --diff .
+
+      - name: Run Flake8
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # ============================================
+  # JOB 2: TESTS UNITARIOS
+  # ============================================
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ env.CACHE_KEY_PREFIX }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-pip-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
-      - name: Run tests
+          pip install pytest pytest-cov pytest-mock
+
+      - name: Create necessary directories
         run: |
-          pytest tests/ -v --cov=. --cov-report=xml
-      
-      - name: Train model
+          mkdir -p artifacts/models
+          mkdir -p artifacts/predictions
+          mkdir -p data_cache
+
+      - name: Run pytest with coverage
         env:
+          PYTHONPATH: ${{ github.workspace }}
           ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
           LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
         run: |
-          python main.py --min-year 2020
-      
+          pytest tests/ \
+            --cov=. \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --junitxml=junit.xml \
+            -v
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: junit.xml
+
+  # ============================================
+  # JOB 3: ENTRENAMIENTO DE MODELOS
+  # ============================================
+  train:
+    name: Train Models
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ env.CACHE_KEY_PREFIX }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create artifacts directories
+        run: |
+          mkdir -p artifacts/models
+          mkdir -p artifacts/features
+          mkdir -p data_cache
+
+      - name: Train ensemble models
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
+          LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
+          CACHE_DIR: ./data_cache
+          ARTIFACTS_DIR: ./artifacts
+        run: |
+          python main.py \
+            --min-year 2020 \
+            --log-level INFO
+
+      - name: Verify model artifacts
+        run: |
+          echo "=== Checking trained models ==="
+          ls -lh artifacts/models/
+          test -f artifacts/models/liga_mx_ensemble.joblib || exit 1
+          test -f artifacts/models/feature_engineer.joblib || exit 1
+          test -f artifacts/models/calibrator.joblib || exit 1
+          test -f artifacts/models/drift_detector.joblib || exit 1
+
       - name: Upload model artifacts
         uses: actions/upload-artifact@v4
         with:
           name: trained-models
           path: artifacts/models/
+          retention-days: 30
 
+      - name: Upload training logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: training-logs
+          path: |
+            *.log
+            artifacts/*.png
+
+  # ============================================
+  # JOB 4: PREDICCIONES DIARIAS
+  # ============================================
   predict:
-    needs: train
-    # Se ejecuta si: 
-    # 1. El job de train fue exitoso (en un flujo completo).
-    # 2. O si el job de train fue omitido (cuando decides no reentrenar), 
-    #    asumiendo que ya existen modelos previos o los descargas de otro lado.
-    if: always() && (needs.train.result == 'success' || needs.train.result == 'skipped')
+    name: Daily Predictions
     runs-on: ubuntu-latest
+    needs: train
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
-      
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ env.CACHE_KEY_PREFIX }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-pip-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
-      - name: Download model artifacts
+
+      - name: Download trained models
         uses: actions/download-artifact@v4
         with:
           name: trained-models
           path: artifacts/models/
-        continue-on-error: true # Evita que falle si no hay artefactos previos al saltarse el entrenamiento
-      
+
+      - name: Verify downloaded models
+        run: |
+          echo "=== Downloaded model files ==="
+          ls -lh artifacts/models/
+
+      - name: Create predictions directory
+        run: mkdir -p artifacts/predictions
+
       - name: Generate predictions
         env:
+          PYTHONPATH: ${{ github.workspace }}
           ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
           LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
+          CACHE_DIR: ./data_cache
+          ARTIFACTS_DIR: ./artifacts
         run: |
-          python predict.py --days-ahead 7
-      
+          python predict.py \
+            --days-ahead 7 \
+            --log-level INFO
+
       - name: Upload predictions
         uses: actions/upload-artifact@v4
         with:
           name: daily-predictions
-          path: artifacts/predictions/
+          path: artifacts/predictions/*.csv
+          retention-days: 90
+
+      - name: Display predictions summary
+        if: always()
+        run: |
+          if [ -f artifacts/predictions/*.csv ]; then
+            echo "=== Latest Predictions ==="
+            cat artifacts/predictions/*.csv | head -20
+          else
+            echo "No predictions generated"
+          fi
+
+  # ============================================
+  # JOB 5: NOTIFICACIONES (OPCIONAL)
+  # ============================================
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [train, predict]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Notification Summary
+        run: |
+          echo "Pipeline execution completed"
+          echo "Training status: ${{ needs.train.result }}"
+          echo "Prediction status: ${{ needs.predict.result }}"
