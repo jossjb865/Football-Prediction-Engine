@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
 Predicción mejorada con drift detection.
+
+ERRORES CORREGIDOS:
+- Falta import de pandas al inicio del archivo
+- Import estaba incorrectamente al final
 """
 
 import argparse
 import logging
 import os
 from datetime import datetime, timedelta
+
+import pandas as pd
 
 from config.logging_config import setup_logging
 from config.settings import settings
@@ -76,11 +82,10 @@ def main():
     os.makedirs("artifacts/predictions", exist_ok=True)
     output_path = f"artifacts/predictions/predictions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     predictions.to_csv(output_path, index=False)
-    
+
     logger.info(f"✅ Predictions saved to {output_path}")
     print(predictions[["home_name", "away_name", "prediction", "confidence"]].to_string(index=False))
 
 
 if __name__ == "__main__":
-    import pandas as pd
     main()
