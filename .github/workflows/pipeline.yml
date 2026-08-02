@@ -1,0 +1,45 @@
+name: Liga MX Pipeline (Train & Predict)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * *"   # Todos los días a las 14:00 UTC
+
+jobs:
+  train-and-predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Train Models
+        env:
+          ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
+          LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
+          ISPORTS_BASE_URL: ${{ secrets.ISPORTS_BASE_URL }}
+        run: |
+          python main.py --min-year 2020
+
+      - name: Run Predictions
+        env:
+          ISPORTS_API_KEY: ${{ secrets.ISPORTS_API_KEY }}
+          LIGA_MX_LEAGUE_ID: ${{ secrets.LIGA_MX_LEAGUE_ID }}
+        run: |
+          python predict.py
+
+      - name: Upload Predictions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-predictions
+          path: predictions_*.csv
